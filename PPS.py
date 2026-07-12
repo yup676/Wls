@@ -1,929 +1,419 @@
 #!/usr/bin/env python3
 """
-Professional Pentesting Scanner - WSL Edition
-Compatible with Python 3.13+
+Fast Pentest Scanner - WSL
+Uso: python3 scanner.py alvo.com
 """
 
 import socket
-import ssl
 import subprocess
 import sys
 import re
-import json
-import time
-import threading
-import queue
-from datetime import datetime
-from urllib.parse import urlparse, urljoin
-import http.client
 import requests
 import dns.resolver
 import whois
-import OpenSSL
-from cryptography import x509
-from cryptography.hazmat.backends import default_backend
-from cryptography.hazmat.primitives import hashes
-import concurrent.futures
-import argparse
-import logging
-from typing import Dict, List, Tuple, Optional, Set
-import ipaddress
-import struct
+import ssl
+from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import json
 import base64
 import hashlib
-import random
-from email.parser import Parser
-import smtplib
-import poplib
-import imaplib
-import pymysql
-import psycopg2
-import redis
 
-class ProfessionalScanner:
-    def __init__(self, target: str, threads: int = 50, timeout: int = 5):
+class FastScanner:
+    def __init__(self, target):
         self.target = target
-        self.threads = threads
-        self.timeout = timeout
-        self.start_time = datetime.now()
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        })
+        self.session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'})
         self.results = {
             'target': target,
-            'timestamp': self.start_time.isoformat(),
-            'ip_addresses': [],
-            'dns_records': {},
-            'open_ports': [],
+            'ip': None,
+            'ports': [],
             'services': {},
-            'banners': {},
-            'http_headers': {},
-            'cookies': {},
-            'technologies': [],
-            'ssl_info': {},
-            'subdomains': [],
-            'directories': [],
-            'parameters': [],
             'vulnerabilities': [],
-            'tool_recommendations': [],
-            'security_headers': {},
-            'cves': [],
-            'whois_info': {},
-            'email_addresses': [],
-            'links_found': [],
-            'forms_found': [],
-            'javascript_files': [],
-            'hidden_endpoints': []
+            'exploits': [],
+            'tools': []
         }
+        self.vuln_db = self.load_vuln_db()
         
-    def resolve_target(self) -> bool:
-        """Perform comprehensive DNS resolution"""
+    def load_vuln_db(self):
+        """Base de dados de vulnerabilidades com exploração"""
+        return {
+            'FTP': {
+                'vulns': ['Anonymous Login', 'FTP Bounce Attack', 'Plain Text Credentials'],
+                'exploit': [
+                    'ftp anonymous@{}',
+                    'nmap --script ftp-bounce -p 21 {}',
+                    'tcpdump -i any port 21'
+                ],
+                'tools': ['hydra -l admin -P wordlist.txt ftp://{}', 'nmap --script ftp-* -p 21 {}']
+            },
+            'SSH': {
+                'vulns': ['Weak Ciphers', 'Password Brute Force', 'Version Disclosure'],
+                'exploit': [
+                    'ssh -oKexAlgorithms=diffie-hellman-group1-sha1 root@{}',
+                    'hydra -L users.txt -P pass.txt ssh://{}',
+                    'ssh-audit {}'
+                ],
+                'tools': ['hydra -L users.txt -P pass.txt ssh://{}', 'nmap --script ssh-* -p 22 {}']
+            },
+            'HTTP': {
+                'vulns': ['XSS', 'SQL Injection', 'Directory Listing', 'Information Disclosure', 'CSRF'],
+                'exploit': [
+                    'sqlmap -u "http://{}/?id=1" --dbs',
+                    'xsstrike -u "http://{}/" --crawl',
+                    'dirb http://{}/',
+                    'nikto -h http://{}',
+                    'curl -I http://{}/'
+                ],
+                'tools': [
+                    'sqlmap -u "http://{}/?id=1" --dbs --batch',
+                    'nikto -h http://{}',
+                    'dirb http://{}/',
+                    'wpscan --url http://{}/'
+                ]
+            },
+            'HTTPS': {
+                'vulns': ['SSL/TLS Vulnerabilities', 'Self-Signed Certificate', 'Weak Ciphers'],
+                'exploit': [
+                    'sslscan {}:443',
+                    'testssl.sh {}',
+                    'openssl s_client -connect {}:443 -tls1'
+                ],
+                'tools': ['sslscan {}', 'testssl.sh {}']
+            },
+            'MySQL': {
+                'vulns': ['Default Credentials', 'Remote Code Execution', 'SQL Injection'],
+                'exploit': [
+                    'mysql -h {} -u root -p',
+                    'sqlmap -u "http://{}/" --dbms=mysql --dbs',
+                    'hydra -L users.txt -P pass.txt mysql://{}'
+                ],
+                'tools': ['sqlmap -u "http://{}/" --dbms=mysql --dbs', 'hydra -l root -P wordlist.txt mysql://{}']
+            },
+            'PostgreSQL': {
+                'vulns': ['Default Credentials', 'Remote Code Execution'],
+                'exploit': [
+                    'psql -h {} -U postgres',
+                    'sqlmap -u "http://{}/" --dbms=postgresql --dbs'
+                ],
+                'tools': ['sqlmap -u "http://{}/" --dbms=postgresql --dbs']
+            },
+            'Redis': {
+                'vulns': ['No Authentication', 'Remote Code Execution'],
+                'exploit': [
+                    'redis-cli -h {} info',
+                    'redis-cli -h {} config get *'
+                ],
+                'tools': ['redis-cli -h {}']
+            },
+            'SMTP': {
+                'vulns': ['Open Relay', 'User Enumeration', 'Email Spoofing'],
+                'exploit': [
+                    'nmap --script smtp-* -p 25 {}',
+                    'smtp-user-enum -M VRFY -U users.txt -t {}'
+                ],
+                'tools': ['smtp-user-enum -M VRFY -U users.txt -t {}']
+            }
+        }
+
+    def resolve_dns(self):
+        """Resolução DNS rápida"""
         try:
-            ip_list = []
-            for family in [socket.AF_INET, socket.AF_INET6]:
-                try:
-                    results = socket.getaddrinfo(self.target, None, family, socket.SOCK_STREAM)
-                    for result in results:
-                        ip = result[4][0]
-                        if ip not in ip_list:
-                            ip_list.append(ip)
-                except:
-                    pass
+            self.results['ip'] = socket.gethostbyname(self.target)
+            print(f"[+] Target: {self.target} -> {self.results['ip']}")
             
-            self.results['ip_addresses'] = ip_list
-            print(f"[DNS] Resolved {self.target} to {len(ip_list)} IP addresses")
-            
-            record_types = ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'SRV']
-            for rtype in record_types:
+            # DNS records
+            for rtype in ['A', 'MX', 'NS', 'TXT']:
                 try:
                     answers = dns.resolver.resolve(self.target, rtype)
-                    self.results['dns_records'][rtype] = [str(r) for r in answers]
-                except:
-                    pass
+                    print(f"[+] {rtype}: {', '.join([str(r) for r in answers[:3]])}")
+                except: pass
             
-            return True
+            # WHOIS
+            try:
+                w = whois.whois(self.target)
+                print(f"[+] Registrar: {w.registrar}")
+                print(f"[+] Created: {w.creation_date}")
+            except: pass
         except Exception as e:
-            print(f"[ERROR] DNS resolution failed: {e}")
+            print(f"[-] DNS Error: {e}")
             return False
-    
-    def get_whois(self) -> None:
-        """Retrieve WHOIS information"""
-        try:
-            domain_info = whois.whois(self.target)
-            if domain_info:
-                self.results['whois_info'] = {
-                    'registrar': domain_info.registrar,
-                    'creation_date': str(domain_info.creation_date),
-                    'expiration_date': str(domain_info.expiration_date),
-                    'name_servers': domain_info.name_servers,
-                    'emails': domain_info.emails,
-                    'org': domain_info.org
-                }
-        except:
-            pass
-    
-    def scan_ports(self, ports: List[int]) -> None:
-        """Multi-threaded port scanning"""
-        print(f"[SCAN] Starting port scan with {self.threads} threads")
+        return True
+
+    def scan_ports(self):
+        """Scan de portas rápido"""
+        print("\n[+] Scanning ports...")
+        common_ports = [21,22,23,25,53,80,110,111,135,139,143,443,445,465,587,993,995,
+                       1433,1521,3306,3389,5432,5900,6379,8080,8443,9000,9443,27017]
         open_ports = []
-        port_queue = queue.Queue()
-        results_queue = queue.Queue()
         
-        for port in ports:
-            port_queue.put(port)
+        def check_port(port):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                result = sock.connect_ex((self.results['ip'], port))
+                sock.close()
+                if result == 0:
+                    # Identificar serviço
+                    service = self.identify_service(port)
+                    open_ports.append({'port': port, 'service': service})
+            except: pass
         
-        def worker():
-            while not port_queue.empty():
-                try:
-                    port = port_queue.get_nowait()
-                except queue.Empty:
-                    break
-                
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(self.timeout)
-                    result = sock.connect_ex((self.results['ip_addresses'][0], port))
-                    sock.close()
-                    
-                    if result == 0:
-                        banner = self.get_service_banner(self.results['ip_addresses'][0], port)
-                        service = self.identify_service(port, banner)
-                        open_ports.append({
-                            'port': port,
-                            'service': service,
-                            'banner': banner[:200] if banner else None
-                        })
-                        results_queue.put((port, service, banner))
-                except:
-                    pass
+        with ThreadPoolExecutor(max_workers=50) as executor:
+            executor.map(check_port, common_ports)
         
-        threads_list = []
-        for _ in range(min(self.threads, len(ports))):
-            t = threading.Thread(target=worker)
-            t.start()
-            threads_list.append(t)
-        
-        for t in threads_list:
-            t.join()
-        
-        self.results['open_ports'] = [p['port'] for p in open_ports]
-        for port_info in open_ports:
-            self.results['services'][port_info['port']] = port_info['service']
-            if port_info['banner']:
-                self.results['banners'][port_info['port']] = port_info['banner']
-        
-        print(f"[SCAN] Found {len(open_ports)} open ports")
-    
-    def get_service_banner(self, ip: str, port: int) -> Optional[str]:
-        """Get service banner by connecting to port"""
+        self.results['ports'] = open_ports
+        for p in open_ports:
+            print(f"[+] Port {p['port']}: {p['service']}")
+            self.results['services'][p['port']] = p['service']
+
+    def identify_service(self, port):
+        """Identifica serviço pela porta"""
+        services = {
+            21:'FTP',22:'SSH',23:'Telnet',25:'SMTP',53:'DNS',80:'HTTP',110:'POP3',
+            111:'RPC',135:'MSRPC',139:'NetBIOS',143:'IMAP',443:'HTTPS',445:'SMB',
+            465:'SMTPS',587:'SMTP',993:'IMAPS',995:'POP3S',1433:'MSSQL',1521:'Oracle',
+            3306:'MySQL',3389:'RDP',5432:'PostgreSQL',5900:'VNC',6379:'Redis',
+            8080:'HTTP',8443:'HTTPS',27017:'MongoDB'
+        }
+        return services.get(port, 'Unknown')
+
+    def check_http(self, port=80):
+        """Verificação HTTP"""
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
-            sock.connect((ip, port))
+            url = f"http://{self.target}:{port}"
+            resp = self.session.get(url, timeout=5)
+            print(f"\n[+] HTTP Headers:")
+            for k,v in resp.headers.items():
+                print(f"    {k}: {v}")
             
-            if port in [21, 22, 25, 80, 110, 143, 443, 993, 995]:
-                if port == 21:
-                    sock.send(b'QUIT\r\n')
-                elif port == 22:
-                    sock.send(b'SSH-2.0-OpenSSH_8.9\r\n')
-                elif port == 25 or port == 587:
-                    sock.send(b'EHLO test\r\n')
-                elif port in [80, 443, 8080, 8443]:
-                    sock.send(b'HEAD / HTTP/1.1\r\nHost: ' + self.target.encode() + b'\r\n\r\n')
-                elif port == 110:
-                    sock.send(b'QUIT\r\n')
-                elif port == 143:
-                    sock.send(b'a001 LOGOUT\r\n')
-                elif port == 3306:
-                    sock.send(b'\x00\x00\x00\x00')
-                elif port == 6379:
-                    sock.send(b'INFO\r\n')
+            # Security headers check
+            missing = []
+            for h in ['Strict-Transport-Security','Content-Security-Policy','X-Frame-Options',
+                     'X-Content-Type-Options','X-XSS-Protection']:
+                if h not in resp.headers:
+                    missing.append(h)
+            if missing:
+                self.add_vuln('HTTP', f'Missing headers: {", ".join(missing)}', 'Medium',
+                             f'Add headers: {", ".join(missing)}')
             
-            banner = sock.recv(2048).decode('utf-8', errors='ignore').strip()
-            sock.close()
-            return banner
-        except:
-            return None
-    
-    def identify_service(self, port: int, banner: Optional[str]) -> str:
-        """Identify service based on port and banner"""
-        common_ports = {
-            21: 'FTP', 22: 'SSH', 23: 'Telnet', 25: 'SMTP',
-            53: 'DNS', 80: 'HTTP', 110: 'POP3', 111: 'RPC',
-            135: 'MSRPC', 139: 'NetBIOS', 143: 'IMAP', 443: 'HTTPS',
-            445: 'SMB', 465: 'SMTPS', 587: 'SMTP', 993: 'IMAPS',
-            995: 'POP3S', 1433: 'MSSQL', 1521: 'Oracle', 3306: 'MySQL',
-            3389: 'RDP', 5432: 'PostgreSQL', 5900: 'VNC', 6379: 'Redis',
-            8080: 'HTTP-Alt', 8443: 'HTTPS-Alt', 27017: 'MongoDB'
-        }
-        
-        if port in common_ports:
-            service = common_ports[port]
-        else:
-            service = 'Unknown'
-        
-        if banner:
-            banner_lower = banner.lower()
-            if 'openssh' in banner_lower:
-                service = 'SSH'
-            elif 'apache' in banner_lower:
-                service = 'HTTP-Apache'
-            elif 'nginx' in banner_lower:
-                service = 'HTTP-Nginx'
-            elif 'iis' in banner_lower:
-                service = 'HTTP-IIS'
-            elif 'ftp' in banner_lower:
-                service = 'FTP'
-            elif 'mysql' in banner_lower:
-                service = 'MySQL'
-            elif 'postgresql' in banner_lower:
-                service = 'PostgreSQL'
-            elif 'redis' in banner_lower:
-                service = 'Redis'
-            elif 'mongo' in banner_lower:
-                service = 'MongoDB'
-        
-        return service
-    
-    def check_http_services(self) -> None:
-        """Comprehensive HTTP/HTTPS service enumeration"""
-        http_ports = [80, 443, 8080, 8443, 8000, 8888, 9000, 9443]
-        for port in http_ports:
-            if port not in self.results['open_ports']:
-                continue
+            # Check for XSS
+            if '<script>' in resp.text or 'alert(' in resp.text:
+                self.add_vuln('HTTP', 'Potential XSS detected', 'High',
+                             'Test: <script>alert(1)</script>')
             
-            protocol = 'https' if port in [443, 8443, 9443] else 'http'
-            url = f"{protocol}://{self.target}:{port}"
+            # Check for SQL injection
+            if 'sql' in resp.text.lower() or 'mysql' in resp.text.lower():
+                self.add_vuln('HTTP', 'SQL error messages visible', 'High',
+                             'sqlmap -u "http://{}/?id=1" --dbs')
             
-            try:
-                response = self.session.get(url, timeout=10, verify=False)
+            # Directory listing
+            if 'Index of /' in resp.text:
+                self.add_vuln('HTTP', 'Directory listing enabled', 'Medium',
+                             'Access: http://{}/')
+            
+            # Technologies
+            techs = []
+            if 'php' in resp.text or 'PHP' in resp.headers.get('X-Powered-By', ''):
+                techs.append('PHP')
+            if 'wordpress' in resp.text.lower():
+                techs.append('WordPress')
+            if 'wp-content' in resp.text:
+                techs.append('WordPress')
+            if techs:
+                print(f"[+] Technologies: {', '.join(techs)}")
                 
-                self.results['http_headers'][port] = dict(response.headers)
-                
-                security_headers = {
-                    'Strict-Transport-Security': 'HSTS',
-                    'Content-Security-Policy': 'CSP',
-                    'X-Frame-Options': 'Clickjacking Protection',
-                    'X-Content-Type-Options': 'MIME Sniffing Protection',
-                    'X-XSS-Protection': 'XSS Protection',
-                    'Referrer-Policy': 'Referrer Policy',
-                    'Permissions-Policy': 'Permissions Policy'
-                }
-                
-                missing_headers = []
-                for header, name in security_headers.items():
-                    if header not in response.headers:
-                        missing_headers.append(name)
-                
-                if missing_headers:
-                    self.results['vulnerabilities'].append({
-                        'category': 'Security Headers',
-                        'description': f'Missing security headers: {", ".join(missing_headers)}',
-                        'severity': 'Medium',
-                        'port': port
-                    })
-                    self.results['security_headers'][port] = {
-                        'present': [h for h in security_headers if h in response.headers],
-                        'missing': missing_headers
-                    }
-                
-                if 'Set-Cookie' in response.headers:
-                    cookie_string = response.headers['Set-Cookie']
-                    self.results['cookies'][port] = cookie_string
+        except Exception as e:
+            print(f"[-] HTTP error: {e}")
+
+    def check_https(self, port=443):
+        """Verificação HTTPS/SSL"""
+        try:
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            
+            with socket.create_connection((self.target, port), timeout=5) as sock:
+                with context.wrap_socket(sock, server_hostname=self.target) as ssock:
+                    cert = ssock.getpeercert()
+                    print(f"\n[+] SSL Certificate:")
+                    print(f"    Subject: {cert.get('subject')}")
+                    print(f"    Issuer: {cert.get('issuer')}")
+                    print(f"    Expires: {cert.get('notAfter')}")
                     
-                    if 'Secure' not in cookie_string:
-                        self.results['vulnerabilities'].append({
-                            'category': 'Cookie Security',
-                            'description': 'Cookie missing Secure flag',
-                            'severity': 'Medium',
-                            'port': port
-                        })
-                    if 'HttpOnly' not in cookie_string:
-                        self.results['vulnerabilities'].append({
-                            'category': 'Cookie Security',
-                            'description': 'Cookie missing HttpOnly flag',
-                            'severity': 'Low',
-                            'port': port
-                        })
-                
-                tech_patterns = {
-                    'php': r'php|\.php|X-Powered-By: PHP',
-                    'asp.net': r'\.aspx|X-AspNet-Version|ASP\.NET',
-                    'node.js': r'node|express|x-powered-by: express',
-                    'django': r'django|csrftoken',
-                    'rails': r'rails|ruby',
-                    'wordpress': r'wordpress|wp-|wp-content',
-                    'joomla': r'joomla|com_content',
-                    'drupal': r'drupal|sites/all',
-                    'angular': r'ng-|angular|ng-app',
-                    'react': r'react|_react',
-                    'vue': r'vue|v-'
-                }
-                
-                for tech, pattern in tech_patterns.items():
-                    if re.search(pattern, response.text, re.I):
-                        self.results['technologies'].append(tech)
-                
-                links = re.findall(r'<a\s+(?:[^>]*?\s+)?href="([^"]*)"', response.text)
-                self.results['links_found'].extend(links[:50])
-                
-                forms = re.findall(r'<form[^>]*action="([^"]*)"[^>]*>', response.text)
-                self.results['forms_found'].extend(forms[:20])
-                
-                emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', response.text)
-                if emails:
-                    self.results['email_addresses'].extend(emails[:20])
-                
-                js_files = re.findall(r'<script[^>]*src="([^"]*\.js)"', response.text)
-                self.results['javascript_files'].extend(js_files[:20])
-                
-            except Exception as e:
-                print(f"[ERROR] HTTP scan on port {port}: {e}")
-    
-    def check_ssl_tls(self) -> None:
-        """Comprehensive SSL/TLS analysis"""
-        ssl_ports = [443, 8443, 9443, 993, 995, 465]
-        for port in ssl_ports:
-            if port not in self.results['open_ports']:
-                continue
-            
-            try:
-                context = ssl.create_default_context()
-                context.check_hostname = False
-                context.verify_mode = ssl.CERT_NONE
-                
-                with socket.create_connection((self.target, port), timeout=10) as sock:
-                    with context.wrap_socket(sock, server_hostname=self.target) as ssock:
-                        cert = ssock.getpeercert()
+                    # Check expiry
+                    from datetime import datetime
+                    expiry = datetime.strptime(cert['notAfter'], '%b %d %H:%M:%S %Y %Z')
+                    days = (expiry - datetime.now()).days
+                    if days < 30:
+                        self.add_vuln('HTTPS', f'Certificate expires in {days} days', 'High',
+                                     f'Renew certificate before {expiry}')
+                    
+                    # Self-signed check
+                    subject = str(cert.get('subject', ''))
+                    issuer = str(cert.get('issuer', ''))
+                    if subject == issuer:
+                        self.add_vuln('HTTPS', 'Self-signed certificate', 'Medium',
+                                     'Replace with valid certificate')
+                    
+                    # TLS version
+                    version = ssock.version()
+                    if version in ['TLSv1', 'TLSv1.1']:
+                        self.add_vuln('HTTPS', f'Outdated TLS: {version}', 'High',
+                                     f'Upgrade to TLSv1.2+')
                         
-                        self.results['ssl_info'][port] = {
-                            'subject': dict(x[0] for x in cert.get('subject', [])),
-                            'issuer': dict(x[0] for x in cert.get('issuer', [])),
-                            'version': cert.get('version'),
-                            'serialNumber': cert.get('serialNumber'),
-                            'notBefore': cert.get('notBefore'),
-                            'notAfter': cert.get('notAfter'),
-                            'subjectAltName': cert.get('subjectAltName', [])
-                        }
-                        
-                        if ssock.version() in ['TLSv1', 'TLSv1.1']:
-                            self.results['vulnerabilities'].append({
-                                'category': 'SSL/TLS',
-                                'description': f'Outdated TLS version: {ssock.version()}',
-                                'severity': 'High',
-                                'port': port
-                            })
-                        
-                        not_after = datetime.strptime(cert['notAfter'], '%b %d %H:%M:%S %Y %Z')
-                        if (not_after - datetime.now()).days < 30:
-                            self.results['vulnerabilities'].append({
-                                'category': 'SSL/TLS',
-                                'description': f'Certificate expires in {(not_after - datetime.now()).days} days',
-                                'severity': 'Medium',
-                                'port': port
-                            })
-                        
-                        issuer_cn = dict(x[0] for x in cert.get('issuer', [])).get('commonName', '')
-                        subject_cn = dict(x[0] for x in cert.get('subject', [])).get('commonName', '')
-                        if issuer_cn == subject_cn:
-                            self.results['vulnerabilities'].append({
-                                'category': 'SSL/TLS',
-                                'description': 'Self-signed certificate detected',
-                                'severity': 'Medium',
-                                'port': port
-                            })
-                        
-            except Exception as e:
-                print(f"[ERROR] SSL scan on port {port}: {e}")
-    
-    def check_service_vulnerabilities(self) -> None:
-        """Check for known service vulnerabilities"""
-        for port, service in self.results['services'].items():
-            vulnerabilities = []
-            cves = []
+        except Exception as e:
+            print(f"[-] SSL error: {e}")
+
+    def add_vuln(self, service, description, severity, exploit):
+        """Adiciona vulnerabilidade"""
+        vuln = {
+            'service': service,
+            'description': description,
+            'severity': severity,
+            'exploit': exploit.format(self.target)
+        }
+        self.results['vulnerabilities'].append(vuln)
+        print(f"\n[!] {severity}: {description}")
+        print(f"    -> {exploit.format(self.target)}")
+
+    def check_service_vulns(self):
+        """Verifica vulnerabilidades por serviço"""
+        for port_info in self.results['ports']:
+            service = port_info['service']
+            port = port_info['port']
             
-            if service == 'FTP':
-                vulnerabilities.extend([
-                    'Anonymous login check recommended',
-                    'FTP bounce attack possible if port 20 open',
-                    'Weak password policy potential',
-                    'Clear text credentials transmission'
-                ])
-                cves.extend(['CVE-2011-2523', 'CVE-2015-3306', 'CVE-2017-9248'])
+            if service in self.vuln_db:
+                db = self.vuln_db[service]
+                print(f"\n[+] Checking {service} on port {port}")
                 
-                try:
-                    import ftplib
-                    ftp = ftplib.FTP(self.target, timeout=5)
-                    ftp.login('anonymous', 'test@test.com')
-                    vulnerabilities.append('Anonymous FTP login allowed')
-                    ftp.quit()
-                except:
-                    pass
-            
-            elif service == 'SSH':
-                vulnerabilities.extend([
-                    'Weak ciphers check recommended',
-                    'Password brute force risk',
-                    'Version disclosure possible',
-                    'Host key validation'
-                ])
-                cves.extend(['CVE-2016-6210', 'CVE-2018-15473', 'CVE-2020-14145'])
+                # Add vulnerabilities
+                for vuln in db['vulns']:
+                    self.add_vuln(service, vuln, 'Medium', db['exploit'][0])
                 
-                if 'SSH-1.99' in self.results['banners'].get(port, ''):
-                    vulnerabilities.append('SSHv1 protocol supported (insecure)')
-            
-            elif 'HTTP' in service:
-                vulnerabilities.extend([
-                    'Cross-Site Scripting (XSS) potential',
-                    'SQL Injection vectors',
-                    'Directory listing risk',
-                    'Information disclosure',
-                    'CSRF vulnerability potential',
-                    'Insecure file uploads',
-                    'XML External Entity (XXE)'
-                ])
-                cves.extend(['CVE-2021-41773', 'CVE-2021-42013', 'CVE-2020-16898'])
+                # Add tools
+                for tool in db['tools']:
+                    self.results['tools'].append(tool.format(self.target))
                 
-                try:
-                    resp = self.session.get(f"http://{self.target}:{port}/", timeout=5)
-                    if 'Index of /' in resp.text or 'Parent Directory' in resp.text:
-                        vulnerabilities.append('Directory listing enabled on root')
-                except:
-                    pass
-            
-            elif service in ['MySQL', 'PostgreSQL', 'MongoDB', 'Redis']:
-                vulnerabilities.extend([
-                    f'Default credentials for {service}',
-                    'Remote code execution risk',
-                    'SQL injection if web-facing',
-                    'Weak authentication mechanisms'
-                ])
+                # Specific checks
+                if service == 'FTP':
+                    try:
+                        import ftplib
+                        ftp = ftplib.FTP(self.target, timeout=3)
+                        ftp.login('anonymous', 'test@test.com')
+                        self.add_vuln('FTP', 'Anonymous login allowed', 'High',
+                                     'ftp anonymous@{}')
+                        ftp.quit()
+                    except: pass
                 
-                if service == 'MySQL':
-                    cves.extend(['CVE-2018-3282', 'CVE-2019-2795', 'CVE-2020-14854'])
-                elif service == 'PostgreSQL':
-                    cves.extend(['CVE-2019-10164', 'CVE-2020-14349'])
+                elif service == 'MySQL':
+                    self.add_vuln('MySQL', 'Check for default credentials', 'High',
+                                 'mysql -h {} -u root -p')
+                
                 elif service == 'Redis':
-                    cves.extend(['CVE-2019-8321', 'CVE-2019-8322'])
-            
-            elif service in ['SMTP', 'SMTPS']:
-                vulnerabilities.extend([
-                    'Open relay possible',
-                    'Email spoofing risk',
-                    'Weak authentication',
-                    'Server information disclosure'
-                ])
-                cves.extend(['CVE-2021-28513', 'CVE-2020-28241', 'CVE-2019-13945'])
-            
-            elif service == 'RDP':
-                vulnerabilities.extend([
-                    'BlueKeep vulnerability potential',
-                    'Weak encryption possible',
-                    'Man-in-the-middle risk'
-                ])
-                cves.extend(['CVE-2019-0708', 'CVE-2020-0609', 'CVE-2020-0610'])
-            
-            if vulnerabilities:
-                for vuln in vulnerabilities:
-                    self.results['vulnerabilities'].append({
-                        'category': f'{service} Security',
-                        'description': vuln,
-                        'severity': 'Medium',
-                        'port': port
-                    })
-            
-            if cves:
-                self.results['cves'].extend(cves[:5])
-    
-    def recommend_tools(self) -> None:
-        """Recommend tools based on discovered services"""
-        tools = []
+                    self.add_vuln('Redis', 'Check for no authentication', 'High',
+                                 'redis-cli -h {} info')
+
+    def recommend_tools(self):
+        """Recomenda ferramentas"""
+        tools_set = set(self.results['tools'])
         
-        if any('HTTP' in s for s in self.results['services'].values()):
-            tools.append({
-                'tool': 'Burp Suite Professional',
-                'purpose': 'Web application security testing and interception',
-                'category': 'Web'
-            })
-            tools.append({
-                'tool': 'OWASP ZAP',
-                'purpose': 'Automated web vulnerability scanner',
-                'category': 'Web'
-            })
-            tools.append({
-                'tool': 'SQLMap',
-                'purpose': 'SQL injection detection and exploitation',
-                'category': 'Web'
-            })
-            tools.append({
-                'tool': 'Nikto',
-                'purpose': 'Web server vulnerability scanner',
-                'category': 'Web'
-            })
-            tools.append({
-                'tool': 'Dirb/Dirbuster',
-                'purpose': 'Directory and file brute forcing',
-                'category': 'Web'
-            })
-            tools.append({
-                'tool': 'WPScan',
-                'purpose': 'WordPress vulnerability scanner',
-                'category': 'Web'
-            })
-            tools.append({
-                'tool': 'XSStrike',
-                'purpose': 'XSS detection and exploitation',
-                'category': 'Web'
-            })
+        # Additional tools based on services
+        services = [s['service'] for s in self.results['ports']]
         
-        if self.results['open_ports']:
-            tools.append({
-                'tool': 'Nmap',
-                'purpose': 'Network discovery and security scanning',
-                'category': 'Network'
-            })
-            tools.append({
-                'tool': 'Masscan',
-                'purpose': 'Massive port scanning',
-                'category': 'Network'
-            })
-            tools.append({
-                'tool': 'Wireshark',
-                'purpose': 'Network protocol analysis',
-                'category': 'Network'
-            })
+        if 'HTTP' in services or 'HTTPS' in services:
+            tools_set.add('sqlmap -u "http://{}/" --dbs --batch')
+            tools_set.add('nikto -h http://{}')
+            tools_set.add('dirb http://{}/')
+            tools_set.add('wpscan --url http://{}/')
+            tools_set.add('xsstrike -u "http://{}/" --crawl')
         
-        if 'SSH' in self.results['services'].values():
-            tools.append({
-                'tool': 'Hydra',
-                'purpose': 'SSH password brute forcing',
-                'category': 'Brute Force'
-            })
-            tools.append({
-                'tool': 'Medusa',
-                'purpose': 'Network service brute forcing',
-                'category': 'Brute Force'
-            })
-            tools.append({
-                'tool': 'SSH-Audit',
-                'purpose': 'SSH server security auditing',
-                'category': 'Audit'
-            })
+        if 'SSH' in services:
+            tools_set.add('hydra -L users.txt -P pass.txt ssh://{}')
+            tools_set.add('ssh-audit {}')
         
-        if any(s in ['MySQL', 'PostgreSQL', 'MongoDB', 'Redis'] for s in self.results['services'].values()):
-            tools.append({
-                'tool': 'SQLMap',
-                'purpose': 'Database vulnerability exploitation',
-                'category': 'Database'
-            })
-            tools.append({
-                'tool': 'Metasploit',
-                'purpose': 'Exploitation framework',
-                'category': 'Exploitation'
-            })
+        if 'SMB' in services:
+            tools_set.add('enum4linux -a {}')
+            tools_set.add('crackmapexec smb {}')
         
-        if 'DNS' in self.results['services'].values():
-            tools.append({
-                'tool': 'Dnsrecon',
-                'purpose': 'DNS enumeration and reconnaissance',
-                'category': 'DNS'
-            })
-            tools.append({
-                'tool': 'Fierce',
-                'purpose': 'DNS subdomain brute forcing',
-                'category': 'DNS'
-            })
+        if 'DNS' in services:
+            tools_set.add('dnsrecon -d {}')
+            tools_set.add('fierce -dns {}')
         
-        if 'SMB' in self.results['services'].values():
-            tools.append({
-                'tool': 'Enum4Linux',
-                'purpose': 'SMB enumeration',
-                'category': 'Windows'
-            })
-            tools.append({
-                'tool': 'CrackMapExec',
-                'purpose': 'Windows/Linux post-exploitation',
-                'category': 'Windows'
-            })
+        self.results['tools'] = list(tools_set)
         
-        if any(p in [443, 8443, 9443, 993, 995] for p in self.results['open_ports']):
-            tools.append({
-                'tool': 'SSLScan',
-                'purpose': 'SSL/TLS configuration scanning',
-                'category': 'SSL'
-            })
-            tools.append({
-                'tool': 'TestSSL',
-                'purpose': 'SSL/TLS security testing',
-                'category': 'SSL'
-            })
+        print("\n[+] Recommended Tools:")
+        for tool in sorted(self.results['tools'])[:15]:
+            print(f"    {tool}")
+
+    def generate_report(self):
+        """Gera relatório"""
+        print("\n" + "="*70)
+        print(f"SCAN REPORT - {self.target}")
+        print("="*70)
+        print(f"IP: {self.results['ip']}")
+        print(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"Open Ports: {len(self.results['ports'])}")
+        print("\nServices Found:")
+        for p in self.results['ports']:
+            print(f"  {p['port']}: {p['service']}")
         
-        tools.append({
-            'tool': 'Metasploit Framework',
-            'purpose': 'Exploit development and execution',
-            'category': 'Framework'
-        })
-        tools.append({
-            'tool': 'Searchsploit',
-            'purpose': 'Exploit database search',
-            'category': 'Exploitation'
-        })
-        
-        self.results['tool_recommendations'] = tools
-    
-    def discover_subdomains(self) -> None:
-        """Discover subdomains using common wordlist"""
-        subdomains = ['www', 'mail', 'ftp', 'localhost', 'webmail', 'smtp', 'pop', 'ns1', 'webdisk', 'ns2',
-                      'cpanel', 'whm', 'autodiscover', 'autoconfig', 'm', 'imap', 'test', 'ns', 'blog',
-                      'pop3', 'dev', 'www2', 'admin', 'forum', 'news', 'vpn', 'ns3', 'mail2', 'new',
-                      'mysql', 'old', 'lists', 'support', 'mobile', 'mx', 'static', 'docs', 'beta',
-                      'shop', 'sql', 'secure', 'demo', 'cp', 'calendar', 'wiki', 'web', 'media', 'email',
-                      'images', 'img', 'download', 'dns', 'piwik', 'stats', 'dashboard', 'portal', 'manage']
-        
-        found_subdomains = []
-        
-        def check_subdomain(sub):
-            try:
-                host = f"{sub}.{self.target}"
-                socket.gethostbyname(host)
-                found_subdomains.append(host)
-            except:
-                pass
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.threads) as executor:
-            executor.map(check_subdomain, subdomains)
-        
-        self.results['subdomains'] = found_subdomains
-        print(f"[SUBDOMAINS] Found {len(found_subdomains)} subdomains")
-    
-    def discover_directories(self) -> None:
-        """Discover common directories on web servers"""
-        dirs = [
-            'admin', 'login', 'wp-admin', 'administrator', 'phpmyadmin', 'mysql',
-            'backup', 'backups', 'tmp', 'temp', 'test', 'dev', 'logs', 'log',
-            'config', 'conf', 'etc', 'include', 'includes', 'lib', 'libs',
-            'modules', 'plugins', 'themes', 'uploads', 'upload', 'download',
-            'images', 'img', 'css', 'js', 'javascript', 'assets', 'resources',
-            'data', 'db', 'database', 'sql', 'dump', 'export', 'import',
-            'api', 'rest', 'service', 'ws', 'web', 'app', 'application',
-            'src', 'source', 'git', 'svn', 'hg', 'cvs', 'hidden', 'secret'
-        ]
-        
-        http_ports = [p for p in self.results['open_ports'] if p in [80, 443, 8080, 8443, 8000, 8888]]
-        found_dirs = []
-        
-        for port in http_ports:
-            protocol = 'https' if port in [443, 8443, 9443] else 'http'
-            base_url = f"{protocol}://{self.target}:{port}"
-            
-            for directory in dirs:
-                try:
-                    url = f"{base_url}/{directory}"
-                    resp = self.session.head(url, timeout=5, allow_redirects=False)
-                    if resp.status_code in [200, 301, 302, 403]:
-                        found_dirs.append({
-                            'url': url,
-                            'status': resp.status_code,
-                            'port': port
-                        })
-                except:
-                    pass
-        
-        self.results['directories'] = found_dirs
-        print(f"[DIRECTORIES] Found {len(found_dirs)} directories")
-    
-    def get_parameters(self) -> None:
-        """Extract parameters from found URLs"""
-        params = set()
-        
-        for link in self.results['links_found']:
-            if '?' in link:
-                parts = link.split('?')
-                if len(parts) > 1:
-                    param_str = parts[1]
-                    for p in param_str.split('&'):
-                        if '=' in p:
-                            param_name = p.split('=')[0]
-                            params.add(param_name)
-        
-        self.results['parameters'] = list(params)
-        print(f"[PARAMETERS] Found {len(params)} unique parameters")
-    
-    def check_common_cves(self) -> None:
-        """Check for common CVEs based on services"""
-        cve_database = {
-            'Apache': [
-                'CVE-2021-41773', 'CVE-2021-42013', 'CVE-2020-16898',
-                'CVE-2020-11984', 'CVE-2019-10098', 'CVE-2019-0211'
-            ],
-            'Nginx': [
-                'CVE-2021-23017', 'CVE-2020-36309', 'CVE-2019-20372',
-                'CVE-2019-9511', 'CVE-2018-16843'
-            ],
-            'IIS': [
-                'CVE-2021-31166', 'CVE-2020-17085', 'CVE-2019-0942',
-                'CVE-2019-0630', 'CVE-2018-8420'
-            ],
-            'MySQL': [
-                'CVE-2021-35604', 'CVE-2021-2030', 'CVE-2020-14854',
-                'CVE-2019-2795', 'CVE-2018-3282'
-            ],
-            'PostgreSQL': [
-                'CVE-2020-14349', 'CVE-2019-10164', 'CVE-2018-10915',
-                'CVE-2017-7546', 'CVE-2016-5423'
-            ],
-            'OpenSSH': [
-                'CVE-2020-14145', 'CVE-2018-15473', 'CVE-2016-6210',
-                'CVE-2015-5600', 'CVE-2008-4109'
-            ],
-            'WordPress': [
-                'CVE-2021-39327', 'CVE-2021-29447', 'CVE-2020-35489',
-                'CVE-2020-28035', 'CVE-2019-8942'
-            ],
-            'Tomcat': [
-                'CVE-2020-9484', 'CVE-2019-12408', 'CVE-2019-0232',
-                'CVE-2018-11784', 'CVE-2017-12615'
-            ],
-            'Redis': [
-                'CVE-2019-8321', 'CVE-2019-8322', 'CVE-2018-12326',
-                'CVE-2017-15047', 'CVE-2016-8339'
-            ],
-            'PHP': [
-                'CVE-2021-21708', 'CVE-2020-7066', 'CVE-2019-11043',
-                'CVE-2018-17082', 'CVE-2016-5771'
-            ]
-        }
-        
-        for service in self.results['services'].values():
-            for tech in cve_database:
-                if tech.lower() in service.lower():
-                    self.results['cves'].extend(cve_database[tech])
-        
-        self.results['cves'] = list(set(self.results['cves']))
-    
-    def generate_report(self) -> str:
-        """Generate comprehensive JSON report"""
-        report = {
-            'scan_metadata': {
-                'target': self.target,
-                'start_time': self.start_time.isoformat(),
-                'end_time': datetime.now().isoformat(),
-                'duration_seconds': (datetime.now() - self.start_time).total_seconds(),
-                'scanner_version': '1.0.0'
-            },
-            'network_discovery': {
-                'ip_addresses': self.results['ip_addresses'],
-                'dns_records': self.results['dns_records'],
-                'whois': self.results['whois_info'],
-                'subdomains': self.results['subdomains']
-            },
-            'port_scanning': {
-                'open_ports': self.results['open_ports'],
-                'services': self.results['services'],
-                'banners': self.results['banners']
-            },
-            'web_analysis': {
-                'http_headers': self.results['http_headers'],
-                'technologies': list(set(self.results['technologies'])),
-                'security_headers': self.results['security_headers'],
-                'cookies': self.results['cookies'],
-                'directories': self.results['directories'],
-                'parameters': self.results['parameters'],
-                'links': self.results['links_found'],
-                'forms': self.results['forms_found'],
-                'javascript': self.results['javascript_files'],
-                'emails': self.results['email_addresses']
-            },
-            'ssl_analysis': self.results['ssl_info'],
-            'vulnerability_assessment': {
-                'findings': self.results['vulnerabilities'],
-                'cves': list(set(self.results['cves']))
-            },
-            'tool_recommendations': self.results['tool_recommendations']
-        }
-        
-        return json.dumps(report, indent=2, default=str)
-    
-    def print_summary(self) -> None:
-        """Print concise summary to console"""
-        print("\n" + "="*80)
-        print(f"SCAN COMPLETE - {self.target}")
-        print("="*80)
-        print(f"Duration: {(datetime.now() - self.start_time).total_seconds():.2f}s")
-        print(f"IP Addresses: {len(self.results['ip_addresses'])}")
-        print(f"Open Ports: {len(self.results['open_ports'])}")
-        print(f"Services: {len(self.results['services'])}")
-        print(f"Subdomains: {len(self.results['subdomains'])}")
-        print(f"Directories: {len(self.results['directories'])}")
-        print(f"Parameters: {len(self.results['parameters'])}")
-        print(f"Vulnerabilities: {len(self.results['vulnerabilities'])}")
-        print(f"CVEs: {len(self.results['cves'])}")
-        print("="*80)
-        
-        if self.results['open_ports']:
-            print("\nOpen Ports:")
-            for port in sorted(self.results['open_ports']):
-                service = self.results['services'].get(port, 'Unknown')
-                print(f"  {port}/{service}")
-        
+        print(f"\nVulnerabilities Found: {len(self.results['vulnerabilities'])}")
         if self.results['vulnerabilities']:
-            print("\nVulnerability Summary:")
-            for vuln in self.results['vulnerabilities'][:10]:
-                print(f"  [{vuln['severity']}] {vuln['category']}: {vuln['description'][:100]}")
-            if len(self.results['vulnerabilities']) > 10:
-                print(f"  ... and {len(self.results['vulnerabilities'])-10} more")
+            print("\n" + "-"*50)
+            for i, vuln in enumerate(self.results['vulnerabilities'], 1):
+                print(f"\n{i}. [{vuln['severity']}] {vuln['service']}: {vuln['description']}")
+                print(f"   Exploit: {vuln['exploit']}")
         
-        if self.results['tool_recommendations']:
-            print("\nRecommended Tools:")
-            for tool in self.results['tool_recommendations'][:10]:
-                print(f"  {tool['tool']}: {tool['purpose']}")
-            if len(self.results['tool_recommendations']) > 10:
-                print(f"  ... and {len(self.results['tool_recommendations'])-10} more")
-    
-    def run_full_scan(self) -> None:
-        """Execute complete scan workflow"""
-        print(f"[INIT] Starting professional scan of {self.target}")
-        print(f"[INIT] Threads: {self.threads}, Timeout: {self.timeout}s")
+        print(f"\nRecommended Tools ({len(self.results['tools'])}):")
+        for tool in sorted(self.results['tools'])[:20]:
+            print(f"  {tool}")
         
-        print("\n[PHASE 1] DNS Resolution")
-        if not self.resolve_target():
+        print("\n" + "="*70)
+        
+        # Save report
+        filename = f"scan_{self.target}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        with open(filename, 'w') as f:
+            f.write(json.dumps(self.results, indent=2, default=str))
+        print(f"\n[+] Report saved: {filename}")
+
+    def run(self):
+        """Executa scan completo"""
+        print(f"\n{'='*50}")
+        print(f"FAST PENTEST SCANNER")
+        print(f"Target: {self.target}")
+        print(f"{'='*50}\n")
+        
+        # DNS Resolution
+        if not self.resolve_dns():
             return
         
-        print("\n[PHASE 2] WHOIS Lookup")
-        self.get_whois()
+        # Port Scan
+        self.scan_ports()
         
-        print("\n[PHASE 3] Port Scanning")
-        all_ports = list(range(1, 65535))
-        self.scan_ports(all_ports[:1000])
-        if len(self.results['open_ports']) > 0:
-            common_ports = [21,22,23,25,53,80,110,111,135,139,143,443,445,465,587,993,995,
-                          1433,1521,3306,3389,5432,5900,6379,8080,8443,9000,9443,27017]
-            self.scan_ports(common_ports)
+        # HTTP/HTTPS checks
+        if any(p['port'] in [80, 8080] for p in self.results['ports']):
+            self.check_http(80)
+        if any(p['port'] in [443, 8443] for p in self.results['ports']):
+            self.check_https(443)
         
-        print("\n[PHASE 4] Service Enumeration")
-        self.check_http_services()
-        self.check_ssl_tls()
+        # Service vulnerabilities
+        self.check_service_vulns()
         
-        if any(p in [80, 443, 8080, 8443] for p in self.results['open_ports']):
-            print("\n[PHASE 5] Web Application Analysis")
-            self.discover_subdomains()
-            self.discover_directories()
-            self.get_parameters()
-        
-        print("\n[PHASE 6] Vulnerability Assessment")
-        self.check_service_vulnerabilities()
-        self.check_common_cves()
-        
-        print("\n[PHASE 7] Tool Recommendations")
+        # Tool recommendations
         self.recommend_tools()
         
-        print("\n[PHASE 8] Report Generation")
-        report_json = self.generate_report()
-        
-        filename = f"scan_report_{self.target}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        with open(filename, 'w') as f:
-            f.write(report_json)
-        print(f"[REPORT] Saved to {filename}")
-        
-        self.print_summary()
-
-def parse_arguments():
-    parser = argparse.ArgumentParser(description='Professional Pentesting Scanner')
-    parser.add_argument('target', help='Target IP address or domain')
-    parser.add_argument('-t', '--threads', type=int, default=50,
-                       help='Number of threads (default: 50)')
-    parser.add_argument('-to', '--timeout', type=int, default=5,
-                       help='Connection timeout in seconds (default: 5)')
-    parser.add_argument('-v', '--verbose', action='store_true',
-                       help='Enable verbose output')
-    return parser.parse_args()
+        # Report
+        self.generate_report()
 
 def main():
-    args = parse_arguments()
-    
-    if args.verbose:
-        logging.basicConfig(level=logging.DEBUG)
-    else:
-        logging.basicConfig(level=logging.INFO)
-    
-    scanner = ProfessionalScanner(
-        target=args.target,
-        threads=args.threads,
-        timeout=args.timeout
-    )
-    
-    try:
-        scanner.run_full_scan()
-    except KeyboardInterrupt:
-        print("\n[INTERRUPTED] Scan stopped by user")
-        sys.exit(0)
-    except Exception as e:
-        print(f"\n[ERROR] {e}")
-        if args.verbose:
-            import traceback
-            traceback.print_exc()
+    if len(sys.argv) < 2:
+        print("Uso: python3 scanner.py <target>")
+        print("Exemplo: python3 scanner.py exemplo.com")
         sys.exit(1)
+    
+    target = sys.argv[1]
+    scanner = FastScanner(target)
+    scanner.run()
 
 if __name__ == "__main__":
     main()
