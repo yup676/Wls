@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 Professional Pentesting Scanner - WSL Edition
-Author: Security Research Team
-License: For authorized testing only
+Compatible with Python 3.13+
 """
 
 import socket
@@ -34,12 +33,9 @@ import base64
 import hashlib
 import random
 from email.parser import Parser
-import ftplib
-import telnetlib
 import smtplib
 import poplib
 import imaplib
-import ldap3
 import pymysql
 import psycopg2
 import redis
@@ -98,7 +94,6 @@ class ProfessionalScanner:
             self.results['ip_addresses'] = ip_list
             print(f"[DNS] Resolved {self.target} to {len(ip_list)} IP addresses")
             
-            # Get DNS records
             record_types = ['A', 'AAAA', 'CNAME', 'MX', 'NS', 'TXT', 'SOA', 'SRV']
             for rtype in record_types:
                 try:
@@ -129,13 +124,12 @@ class ProfessionalScanner:
             pass
     
     def scan_ports(self, ports: List[int]) -> None:
-        """Multi-threaded port scanning without nmap"""
+        """Multi-threaded port scanning"""
         print(f"[SCAN] Starting port scan with {self.threads} threads")
         open_ports = []
         port_queue = queue.Queue()
         results_queue = queue.Queue()
         
-        # Add ports to queue
         for port in ports:
             port_queue.put(port)
         
@@ -153,7 +147,6 @@ class ProfessionalScanner:
                     sock.close()
                     
                     if result == 0:
-                        # Get banner if possible
                         banner = self.get_service_banner(self.results['ip_addresses'][0], port)
                         service = self.identify_service(port, banner)
                         open_ports.append({
@@ -165,14 +158,12 @@ class ProfessionalScanner:
                 except:
                     pass
         
-        # Start threads
         threads_list = []
         for _ in range(min(self.threads, len(ports))):
             t = threading.Thread(target=worker)
             t.start()
             threads_list.append(t)
         
-        # Wait for completion
         for t in threads_list:
             t.join()
         
@@ -191,7 +182,6 @@ class ProfessionalScanner:
             sock.settimeout(2)
             sock.connect((ip, port))
             
-            # Send probe for different protocols
             if port in [21, 22, 25, 80, 110, 143, 443, 993, 995]:
                 if port == 21:
                     sock.send(b'QUIT\r\n')
@@ -233,7 +223,6 @@ class ProfessionalScanner:
         else:
             service = 'Unknown'
         
-        # Identify from banner if available
         if banner:
             banner_lower = banner.lower()
             if 'openssh' in banner_lower:
@@ -254,10 +243,6 @@ class ProfessionalScanner:
                 service = 'Redis'
             elif 'mongo' in banner_lower:
                 service = 'MongoDB'
-            elif 'exim' in banner_lower:
-                service = 'SMTP-Exim'
-            elif 'sendmail' in banner_lower:
-                service = 'SMTP-Sendmail'
         
         return service
     
@@ -274,10 +259,8 @@ class ProfessionalScanner:
             try:
                 response = self.session.get(url, timeout=10, verify=False)
                 
-                # Store headers
                 self.results['http_headers'][port] = dict(response.headers)
                 
-                # Check security headers
                 security_headers = {
                     'Strict-Transport-Security': 'HSTS',
                     'Content-Security-Policy': 'CSP',
@@ -305,12 +288,10 @@ class ProfessionalScanner:
                         'missing': missing_headers
                     }
                 
-                # Check cookies
                 if 'Set-Cookie' in response.headers:
                     cookie_string = response.headers['Set-Cookie']
                     self.results['cookies'][port] = cookie_string
                     
-                    # Check cookie security
                     if 'Secure' not in cookie_string:
                         self.results['vulnerabilities'].append({
                             'category': 'Cookie Security',
@@ -326,7 +307,6 @@ class ProfessionalScanner:
                             'port': port
                         })
                 
-                # Check technologies
                 tech_patterns = {
                     'php': r'php|\.php|X-Powered-By: PHP',
                     'asp.net': r'\.aspx|X-AspNet-Version|ASP\.NET',
@@ -345,20 +325,16 @@ class ProfessionalScanner:
                     if re.search(pattern, response.text, re.I):
                         self.results['technologies'].append(tech)
                 
-                # Extract links
                 links = re.findall(r'<a\s+(?:[^>]*?\s+)?href="([^"]*)"', response.text)
                 self.results['links_found'].extend(links[:50])
                 
-                # Extract forms
                 forms = re.findall(r'<form[^>]*action="([^"]*)"[^>]*>', response.text)
                 self.results['forms_found'].extend(forms[:20])
                 
-                # Extract emails
                 emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', response.text)
                 if emails:
                     self.results['email_addresses'].extend(emails[:20])
                 
-                # Extract JS files
                 js_files = re.findall(r'<script[^>]*src="([^"]*\.js)"', response.text)
                 self.results['javascript_files'].extend(js_files[:20])
                 
@@ -381,7 +357,6 @@ class ProfessionalScanner:
                     with context.wrap_socket(sock, server_hostname=self.target) as ssock:
                         cert = ssock.getpeercert()
                         
-                        # Certificate info
                         self.results['ssl_info'][port] = {
                             'subject': dict(x[0] for x in cert.get('subject', [])),
                             'issuer': dict(x[0] for x in cert.get('issuer', [])),
@@ -392,10 +367,6 @@ class ProfessionalScanner:
                             'subjectAltName': cert.get('subjectAltName', [])
                         }
                         
-                        # Check SSL vulnerabilities
-                        ciphers = ssock.cipher()
-                        
-                        # Weak protocol check
                         if ssock.version() in ['TLSv1', 'TLSv1.1']:
                             self.results['vulnerabilities'].append({
                                 'category': 'SSL/TLS',
@@ -404,8 +375,6 @@ class ProfessionalScanner:
                                 'port': port
                             })
                         
-                        # Check certificate validity
-                        from datetime import datetime
                         not_after = datetime.strptime(cert['notAfter'], '%b %d %H:%M:%S %Y %Z')
                         if (not_after - datetime.now()).days < 30:
                             self.results['vulnerabilities'].append({
@@ -415,7 +384,6 @@ class ProfessionalScanner:
                                 'port': port
                             })
                         
-                        # Check for self-signed
                         issuer_cn = dict(x[0] for x in cert.get('issuer', [])).get('commonName', '')
                         subject_cn = dict(x[0] for x in cert.get('subject', [])).get('commonName', '')
                         if issuer_cn == subject_cn:
@@ -435,7 +403,6 @@ class ProfessionalScanner:
             vulnerabilities = []
             cves = []
             
-            # FTP vulnerabilities
             if service == 'FTP':
                 vulnerabilities.extend([
                     'Anonymous login check recommended',
@@ -445,8 +412,8 @@ class ProfessionalScanner:
                 ])
                 cves.extend(['CVE-2011-2523', 'CVE-2015-3306', 'CVE-2017-9248'])
                 
-                # Test anonymous login
                 try:
+                    import ftplib
                     ftp = ftplib.FTP(self.target, timeout=5)
                     ftp.login('anonymous', 'test@test.com')
                     vulnerabilities.append('Anonymous FTP login allowed')
@@ -454,7 +421,6 @@ class ProfessionalScanner:
                 except:
                     pass
             
-            # SSH vulnerabilities
             elif service == 'SSH':
                 vulnerabilities.extend([
                     'Weak ciphers check recommended',
@@ -464,11 +430,9 @@ class ProfessionalScanner:
                 ])
                 cves.extend(['CVE-2016-6210', 'CVE-2018-15473', 'CVE-2020-14145'])
                 
-                # Check for old SSH versions
                 if 'SSH-1.99' in self.results['banners'].get(port, ''):
                     vulnerabilities.append('SSHv1 protocol supported (insecure)')
             
-            # HTTP vulnerabilities
             elif 'HTTP' in service:
                 vulnerabilities.extend([
                     'Cross-Site Scripting (XSS) potential',
@@ -481,7 +445,6 @@ class ProfessionalScanner:
                 ])
                 cves.extend(['CVE-2021-41773', 'CVE-2021-42013', 'CVE-2020-16898'])
                 
-                # Check for directory listing
                 try:
                     resp = self.session.get(f"http://{self.target}:{port}/", timeout=5)
                     if 'Index of /' in resp.text or 'Parent Directory' in resp.text:
@@ -489,7 +452,6 @@ class ProfessionalScanner:
                 except:
                     pass
             
-            # Database vulnerabilities
             elif service in ['MySQL', 'PostgreSQL', 'MongoDB', 'Redis']:
                 vulnerabilities.extend([
                     f'Default credentials for {service}',
@@ -505,7 +467,6 @@ class ProfessionalScanner:
                 elif service == 'Redis':
                     cves.extend(['CVE-2019-8321', 'CVE-2019-8322'])
             
-            # SMTP vulnerabilities
             elif service in ['SMTP', 'SMTPS']:
                 vulnerabilities.extend([
                     'Open relay possible',
@@ -515,7 +476,6 @@ class ProfessionalScanner:
                 ])
                 cves.extend(['CVE-2021-28513', 'CVE-2020-28241', 'CVE-2019-13945'])
             
-            # RDP vulnerabilities
             elif service == 'RDP':
                 vulnerabilities.extend([
                     'BlueKeep vulnerability potential',
@@ -524,7 +484,6 @@ class ProfessionalScanner:
                 ])
                 cves.extend(['CVE-2019-0708', 'CVE-2020-0609', 'CVE-2020-0610'])
             
-            # Print findings
             if vulnerabilities:
                 for vuln in vulnerabilities:
                     self.results['vulnerabilities'].append({
@@ -541,7 +500,6 @@ class ProfessionalScanner:
         """Recommend tools based on discovered services"""
         tools = []
         
-        # Web application tools
         if any('HTTP' in s for s in self.results['services'].values()):
             tools.append({
                 'tool': 'Burp Suite Professional',
@@ -579,7 +537,6 @@ class ProfessionalScanner:
                 'category': 'Web'
             })
         
-        # Network tools
         if self.results['open_ports']:
             tools.append({
                 'tool': 'Nmap',
@@ -597,7 +554,6 @@ class ProfessionalScanner:
                 'category': 'Network'
             })
         
-        # SSH tools
         if 'SSH' in self.results['services'].values():
             tools.append({
                 'tool': 'Hydra',
@@ -615,7 +571,6 @@ class ProfessionalScanner:
                 'category': 'Audit'
             })
         
-        # Database tools
         if any(s in ['MySQL', 'PostgreSQL', 'MongoDB', 'Redis'] for s in self.results['services'].values()):
             tools.append({
                 'tool': 'SQLMap',
@@ -628,7 +583,6 @@ class ProfessionalScanner:
                 'category': 'Exploitation'
             })
         
-        # DNS tools
         if 'DNS' in self.results['services'].values():
             tools.append({
                 'tool': 'Dnsrecon',
@@ -641,7 +595,6 @@ class ProfessionalScanner:
                 'category': 'DNS'
             })
         
-        # SMB tools
         if 'SMB' in self.results['services'].values():
             tools.append({
                 'tool': 'Enum4Linux',
@@ -654,7 +607,6 @@ class ProfessionalScanner:
                 'category': 'Windows'
             })
         
-        # SSL/TLS tools
         if any(p in [443, 8443, 9443, 993, 995] for p in self.results['open_ports']):
             tools.append({
                 'tool': 'SSLScan',
@@ -667,7 +619,6 @@ class ProfessionalScanner:
                 'category': 'SSL'
             })
         
-        # General tools
         tools.append({
             'tool': 'Metasploit Framework',
             'purpose': 'Exploit development and execution',
@@ -809,7 +760,6 @@ class ProfessionalScanner:
                 if tech.lower() in service.lower():
                     self.results['cves'].extend(cve_database[tech])
         
-        # Remove duplicates
         self.results['cves'] = list(set(self.results['cves']))
     
     def generate_report(self) -> str:
@@ -896,57 +846,46 @@ class ProfessionalScanner:
         print(f"[INIT] Starting professional scan of {self.target}")
         print(f"[INIT] Threads: {self.threads}, Timeout: {self.timeout}s")
         
-        # Phase 1: DNS Resolution
         print("\n[PHASE 1] DNS Resolution")
         if not self.resolve_target():
             return
         
-        # Phase 2: WHOIS
         print("\n[PHASE 2] WHOIS Lookup")
         self.get_whois()
         
-        # Phase 3: Port Scanning (all ports)
         print("\n[PHASE 3] Port Scanning")
         all_ports = list(range(1, 65535))
-        self.scan_ports(all_ports[:1000])  # First 1000 ports
+        self.scan_ports(all_ports[:1000])
         if len(self.results['open_ports']) > 0:
-            # Scan common ports
             common_ports = [21,22,23,25,53,80,110,111,135,139,143,443,445,465,587,993,995,
                           1433,1521,3306,3389,5432,5900,6379,8080,8443,9000,9443,27017]
             self.scan_ports(common_ports)
         
-        # Phase 4: Service Enumeration
         print("\n[PHASE 4] Service Enumeration")
         self.check_http_services()
         self.check_ssl_tls()
         
-        # Phase 5: Web Analysis
         if any(p in [80, 443, 8080, 8443] for p in self.results['open_ports']):
             print("\n[PHASE 5] Web Application Analysis")
             self.discover_subdomains()
             self.discover_directories()
             self.get_parameters()
         
-        # Phase 6: Vulnerability Assessment
         print("\n[PHASE 6] Vulnerability Assessment")
         self.check_service_vulnerabilities()
         self.check_common_cves()
         
-        # Phase 7: Tool Recommendations
         print("\n[PHASE 7] Tool Recommendations")
         self.recommend_tools()
         
-        # Phase 8: Report Generation
         print("\n[PHASE 8] Report Generation")
         report_json = self.generate_report()
         
-        # Save report
         filename = f"scan_report_{self.target}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         with open(filename, 'w') as f:
             f.write(report_json)
         print(f"[REPORT] Saved to {filename}")
         
-        # Print summary
         self.print_summary()
 
 def parse_arguments():
@@ -963,27 +902,11 @@ def parse_arguments():
 def main():
     args = parse_arguments()
     
-    # Setup logging
     if args.verbose:
         logging.basicConfig(level=logging.DEBUG)
     else:
         logging.basicConfig(level=logging.INFO)
     
-    # Check dependencies
-    required_packages = ['requests', 'dnspython', 'python-whois', 'pyOpenSSL', 'cryptography']
-    missing = []
-    for package in required_packages:
-        try:
-            __import__(package.replace('-', '_'))
-        except ImportError:
-            missing.append(package)
-    
-    if missing:
-        print(f"Missing dependencies: {', '.join(missing)}")
-        print("Install with: pip install " + ' '.join(missing))
-        sys.exit(1)
-    
-    # Create scanner instance
     scanner = ProfessionalScanner(
         target=args.target,
         threads=args.threads,
